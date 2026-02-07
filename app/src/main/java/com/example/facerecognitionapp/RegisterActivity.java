@@ -122,25 +122,29 @@ public class RegisterActivity extends AppCompatActivity {
         }, ContextCompat.getMainExecutor(this));
     }
     private Bitmap imageProxyToBitmap(ImageProxy image) {
+        // 1. Chuyển đổi cơ bản sang Bitmap (giữ nguyên logic cũ của bạn nhưng thêm bước xoay)
         ImageProxy.PlaneProxy[] planes = image.getPlanes();
         ByteBuffer yBuffer = planes[0].getBuffer();
         ByteBuffer uBuffer = planes[1].getBuffer();
         ByteBuffer vBuffer = planes[2].getBuffer();
-
         int ySize = yBuffer.remaining();
         int uSize = uBuffer.remaining();
         int vSize = vBuffer.remaining();
-
         byte[] nv21 = new byte[ySize + uSize + vSize];
         yBuffer.get(nv21, 0, ySize);
         vBuffer.get(nv21, ySize, vSize);
         uBuffer.get(nv21, ySize + vSize, uSize);
-
         YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, image.getWidth(), image.getHeight(), null);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         yuvImage.compressToJpeg(new Rect(0, 0, yuvImage.getWidth(), yuvImage.getHeight()), 100, out);
         byte[] imageBytes = out.toByteArray();
-        return BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+        // Thay đoạn cuối hàm imageProxyToBitmap bằng đoạn này:
+        Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+        android.graphics.Matrix matrix = new android.graphics.Matrix();
+        matrix.postRotate(image.getImageInfo().getRotationDegrees()); // Xoay 270 độ theo máy của bạn
+        // Lật gương cho camera trước
+        matrix.postScale(-1, 1, bitmap.getWidth() / 2f, bitmap.getHeight() / 2f);
+        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
     }
     private boolean isValidEmail(String email) {
         String emailPattern = "[a-zA-Z0-9._-]+@[a-z]+\\.+[a-z]+";
