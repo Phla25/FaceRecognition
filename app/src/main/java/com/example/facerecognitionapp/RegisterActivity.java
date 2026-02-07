@@ -122,7 +122,7 @@ public class RegisterActivity extends AppCompatActivity {
         }, ContextCompat.getMainExecutor(this));
     }
     private Bitmap imageProxyToBitmap(ImageProxy image) {
-        // 1. Chuyển đổi cơ bản sang Bitmap (giữ nguyên logic cũ của bạn nhưng thêm bước xoay)
+        // 1. Chuyển đổi cơ bản sang Bitmap
         ImageProxy.PlaneProxy[] planes = image.getPlanes();
         ByteBuffer yBuffer = planes[0].getBuffer();
         ByteBuffer uBuffer = planes[1].getBuffer();
@@ -138,10 +138,9 @@ public class RegisterActivity extends AppCompatActivity {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         yuvImage.compressToJpeg(new Rect(0, 0, yuvImage.getWidth(), yuvImage.getHeight()), 100, out);
         byte[] imageBytes = out.toByteArray();
-        // Thay đoạn cuối hàm imageProxyToBitmap bằng đoạn này:
         Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
         android.graphics.Matrix matrix = new android.graphics.Matrix();
-        matrix.postRotate(image.getImageInfo().getRotationDegrees()); // Xoay 270 độ theo máy của bạn
+        matrix.postRotate(image.getImageInfo().getRotationDegrees()); // Xoay 270 độ theo máy
         // Lật gương cho camera trước
         matrix.postScale(-1, 1, bitmap.getWidth() / 2f, bitmap.getHeight() / 2f);
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
