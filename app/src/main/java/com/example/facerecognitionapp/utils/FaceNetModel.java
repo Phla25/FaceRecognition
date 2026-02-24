@@ -53,7 +53,7 @@ public class FaceNetModel {
             Log.e(TAG, "Inference FAILED: " + e.getMessage());
             e.printStackTrace();
         }
-
+        l2Normalize(output[0]);
         return output[0];
     }
 
@@ -93,5 +93,11 @@ public class FaceNetModel {
             interpreter.close();
             Log.d(TAG, "Model closed");
         }
+    }
+    private void l2Normalize(float[] vector) {
+        float sum = 0;
+        for (float v : vector) sum += v * v;
+        float norm = (float) Math.sqrt(sum);
+        for (int i = 0; i < vector.length; i++) vector[i] /= norm;
     }
 }

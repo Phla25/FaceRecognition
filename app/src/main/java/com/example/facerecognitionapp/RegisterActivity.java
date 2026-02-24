@@ -18,6 +18,7 @@ import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -41,6 +42,7 @@ public class RegisterActivity extends AppCompatActivity {
     private FaceNetModel faceNetModel;
     private UserDao userDao;
     private boolean isProcessing = false;
+    private static final int CAMERA_PERMISSION_CODE = 100;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -53,7 +55,7 @@ public class RegisterActivity extends AppCompatActivity {
             return insets;
         });
         init();
-        startCamera();
+        checkCameraPermission();
     }
     private void init(){
         previewView = findViewById(R.id.previewViewRegister);
@@ -80,29 +82,71 @@ public class RegisterActivity extends AppCompatActivity {
             }
         });
     }
-    private void startCamera(){
+    private void checkCameraPermission() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
+                == android.content.pm.PackageManager.PERMISSION_DENIED) {
+            // Nếu chưa có quyền, thì hỏi người dùng
+            ActivityCompat.requestPermissions(this,
+                    new String[] {android.Manifest.permission.CAMERA}, CAMERA_PERMISSION_CODE);
+        } else {
+            // Nếu đã có quyền rồi thì mở Camera
+            startCamera();
+        }
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAMERA_PERMISSION_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Đã cấp quyền Camera", Toast.LENGTH_SHORT).show();
+                startCamera();
+            } else {
+                Toast.makeText(this, "Bạn cần cấp quyền Camera để sử dụng tính năng này", Toast.LENGTH_LONG).show();
+            }
+        }
+    }
+    private void startCamera() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
-            try{
+            try {
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
                 Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
+
                 ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build();
-                imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
-                    if (isProcessing){
-                        Bitmap bitmap = imageProxyToBitmap(imageProxy);
-                        if (bitmap != null) {
 
-                            float[] faceVector = faceNetModel.recognize(bitmap);
-                            // Tạo Đối tượng User mới
-                            User user = new User(etName.getText().toString(),
+                imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
+                    if (isProcessing) {
+                        Bitmap fullBitmap = imageProxyToBitmap(imageProxy);
+                        if (fullBitmap != null) {
+                            // --- BẮT ĐẦU LOGIC CROP ĐỒNG BỘ ---
+                            int width = fullBitmap.getWidth();
+                            int height = fullBitmap.getHeight();
+
+                            // Cắt một vùng hình chữ nhật đứng ở giữa ảnh (Tỉ lệ 0.7x0.6 giống Validation)
+                            int cropW = (int) (width * 0.7);
+                            int cropH = (int) (height * 0.6);
+                            int left = (width - cropW) / 2;
+                            int top = (height - cropH) / 2;
+
+                            // Tạo ảnh Bitmap mới chỉ chứa phần khuôn mặt trong khung
+                            Bitmap croppedFace = Bitmap.createBitmap(fullBitmap, left, top, cropW, cropH);
+                            // --- KẾT THÚC LOGIC CROP ---
+
+                            // Trích xuất vector từ ảnh đã CROP
+                            float[] faceVector = faceNetModel.recognize(croppedFace);
+
+                            // Tạo Đối tượng User mới với vector chất lượng cao
+                            User user = new User(
+                                    etName.getText().toString(),
                                     etEmail.getText().toString(),
                                     faceVector
                             );
+
                             // Thực hiện lưu vào Database
-                            new RegisterTask(userDao, ()->{
+                            new RegisterTask(userDao, () -> {
                                 runOnUiThread(() -> {
                                     Toast.makeText(RegisterActivity.this, "Đăng ký thành công", Toast.LENGTH_SHORT).show();
                                     cameraProvider.unbindAll();
@@ -114,6 +158,7 @@ public class RegisterActivity extends AppCompatActivity {
                     }
                     imageProxy.close();
                 });
+
                 cameraProvider.unbindAll();
                 cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageAnalysis);
             } catch (Exception e) {

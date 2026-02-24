@@ -19,6 +19,7 @@ import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
+import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 import androidx.core.graphics.Insets;
 import androidx.core.view.ViewCompat;
@@ -44,6 +45,8 @@ public class ValidationActivity extends AppCompatActivity {
     private TextView tvStatus;
     private FaceNetModel faceNetModel;
     private User user;
+    private static final int CAMERA_PERMISSION_CODE = 100;
+    private boolean isValidated = false; // Biến cờ đánh dấu
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -56,13 +59,36 @@ public class ValidationActivity extends AppCompatActivity {
             return insets;
         });
         init();
-        startCamera();
+        checkCameraPermission();
     }
     private void init(){
         previewViewValidation = findViewById(R.id.previewViewValidation);
         tvStatus = findViewById(R.id.tvStatus);
         faceNetModel = new FaceNetModel(this);
         user = (User)getIntent().getSerializableExtra("user");
+    }
+    private void checkCameraPermission() {
+        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
+                == android.content.pm.PackageManager.PERMISSION_DENIED) {
+            // Nếu chưa có quyền, thì hỏi người dùng
+            ActivityCompat.requestPermissions(this,
+                    new String[] {android.Manifest.permission.CAMERA}, CAMERA_PERMISSION_CODE);
+        } else {
+            // Nếu đã có quyền rồi thì mở Camera
+            startCamera();
+        }
+    }
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == CAMERA_PERMISSION_CODE) {
+            if (grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                Toast.makeText(this, "Đã cấp quyền Camera", Toast.LENGTH_SHORT).show();
+                startCamera();
+            } else {
+                Toast.makeText(this, "Bạn cần cấp quyền Camera để sử dụng tính năng này", Toast.LENGTH_LONG).show();
+            }
+        }
     }
     private void startCamera(){
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
@@ -75,12 +101,29 @@ public class ValidationActivity extends AppCompatActivity {
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build();
                 imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
-                    Bitmap currentBitmap = imageProxyToBitmap(imageProxy);
-                    if (currentBitmap != null) {
-                        // 1. Trích xuất vector của khuôn mặt đang đứng trước camera
-                        float[] currentFaceVector = faceNetModel.recognize(currentBitmap);
-                        // 2. Lấy vector đã lưu trong DB của User này
+                    if (isValidated) {
+                        imageProxy.close();
+                        return;
+                    }
+                    Bitmap fullBitmap = imageProxyToBitmap(imageProxy);
+                    if (fullBitmap != null) {
+                        // 1. Tính toán vùng Crop (Lấy vùng giữa ảnh tương ứng với khung trên màn hình)
+                        int width = fullBitmap.getWidth();
+                        int height = fullBitmap.getHeight();
+
+                        // Cắt một vùng hình chữ nhật đứng ở giữa ảnh
+                        int cropW = (int) (width * 0.7); // Lấy 70% chiều rộng
+                        int cropH = (int) (height * 0.6); // Lấy 60% chiều cao
+                        int left = (width - cropW) / 2;
+                        int top = (height - cropH) / 2;
+
+                        Bitmap croppedFace = Bitmap.createBitmap(fullBitmap, left, top, cropW, cropH);
+
+                        // 2. Đưa ảnh đã CROP vào nhận diện
+                        float[] currentFaceVector = faceNetModel.recognize(croppedFace);
                         float[] storedFaceVector = user.getFaceData();
+
+                        double distance = calculateDistance(currentFaceVector, storedFaceVector);
                         // === Debug ===
                         android.util.Log.d("FaceDebug", "=============================");
                         android.util.Log.d("FaceDebug", "Current vector length: " + currentFaceVector.length);
@@ -92,14 +135,11 @@ public class ValidationActivity extends AppCompatActivity {
                                 java.util.Arrays.copyOfRange(storedFaceVector, 0, Math.min(5, storedFaceVector.length))
                         ));
                         // === Debug ===
-                        // 3. Tính toán khoảng cách Euclidean giữa 2 vector
-                        double distance = calculateDistance(currentFaceVector, storedFaceVector);
-                        android.util.Log.d("FaceCheck", "Khoảng cách hiện tại: " + distance);
-                        // 4. Kiểm tra ngưỡng (Threshold). Thường là 1.0 với MobileFaceNet
-                        // Khoảng cách càng nhỏ thì 2 khuôn mặt càng giống nhau
-                        if (distance < 0.8) {
+                        if (distance < 0.6) {
                             // Gửi lên Server Qua MQTT
-                            sendLoginNotification(user, currentBitmap);
+                            isValidated = true;
+                            sendLoginNotification(user, croppedFace);
+
                             runOnUiThread(() -> {
                                 Toast.makeText(this, "Xác thực thành công!", Toast.LENGTH_SHORT).show();
                                 Intent intent = new Intent(ValidationActivity.this, HomeActivity.class);
@@ -107,9 +147,11 @@ public class ValidationActivity extends AppCompatActivity {
                                 startActivity(intent);
                                 finish();
                             });
-                        }  else {
-                            // XÁC THỰC THẤT BẠI - HIỂN THỊ LỖI
-                            tvStatus.setText("Khuôn mặt không khớp! (" + String.format("%.2f", distance) + ")");
+                        } else {
+                            // XÁC THỰC THẤT BẠI
+                            runOnUiThread(() -> {
+                                tvStatus.setText("Khuôn mặt không khớp! (" + String.format("%.2f", distance) + ")");
+                            });
                         }
                     }
                     imageProxy.close();
@@ -157,32 +199,33 @@ public class ValidationActivity extends AppCompatActivity {
         String brokerUrl = "tcp://broker.emqx.io:1883"; // Broker miễn phí để test
         String clientId = "AndroidFaceApp_" + System.currentTimeMillis();
         String topic = "face_app/login_logs";
+        new Thread(() -> {
+            try {
+                MqttClient client = new MqttClient(brokerUrl, clientId, null);
+                client.connect();
+                String name = user.getName();
+                String email = user.getEmail();
 
-        try {
-            MqttClient client = new MqttClient(brokerUrl, clientId, null);
-            client.connect();
-            String name = user.getName();
-            String email = user.getEmail();
+                // 1. Chuyển Bitmap thành Base64 (Resize nhỏ để gửi nhanh)
+                Bitmap smallBitmap = Bitmap.createScaledBitmap(faceBitmap, 160, 160, false);
+                ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                smallBitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos);
+                String base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT);
 
-            // 1. Chuyển Bitmap thành Base64 (Resize nhỏ để gửi nhanh)
-            Bitmap smallBitmap = Bitmap.createScaledBitmap(faceBitmap, 160, 160, false);
-            ByteArrayOutputStream baos = new ByteArrayOutputStream();
-            smallBitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos);
-            String base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT);
+                // 2. Tạo JSON payload
+                JSONObject json = new JSONObject();
+                json.put("name", name);
+                json.put("email", email);
+                json.put("time", new SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(new Date()));
+                json.put("image", base64Image);
 
-            // 2. Tạo JSON payload
-            JSONObject json = new JSONObject();
-            json.put("name", name);
-            json.put("email", email);
-            json.put("time", new SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(new Date()));
-            json.put("image", base64Image);
-
-            // 3. Gửi tin nhắn
-            MqttMessage message = new MqttMessage(json.toString().getBytes());
-            client.publish(topic, message);
-            client.disconnect();
-        } catch (Exception e) {
-            e.printStackTrace();
-        }
+                // 3. Gửi tin nhắn
+                MqttMessage message = new MqttMessage(json.toString().getBytes());
+                client.publish(topic, message);
+                client.disconnect();
+            } catch (Exception e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 }
