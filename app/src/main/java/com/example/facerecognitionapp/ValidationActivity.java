@@ -135,7 +135,7 @@ public class ValidationActivity extends AppCompatActivity {
                                 java.util.Arrays.copyOfRange(storedFaceVector, 0, Math.min(5, storedFaceVector.length))
                         ));
                         // === Debug ===
-                        if (distance < 0.6) {
+                        if (distance < 0.85) {
                             // Gửi lên Server Qua MQTT
                             isValidated = true;
                             sendLoginNotification(user, croppedFace);
