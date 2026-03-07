@@ -28,6 +28,8 @@ import androidx.core.view.WindowInsetsCompat;
 import com.example.facerecognitionapp.entities.User;
 import com.example.facerecognitionapp.utils.FaceNetModel;
 import com.google.common.util.concurrent.ListenableFuture;
+import com.google.gson.Gson;
+import com.google.gson.reflect.TypeToken;
 
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
@@ -37,8 +39,15 @@ import java.io.ByteArrayOutputStream;
 import java.io.Serializable;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
+
 
 public class ValidationActivity extends AppCompatActivity {
     private PreviewView previewViewValidation;
@@ -46,6 +55,9 @@ public class ValidationActivity extends AppCompatActivity {
     private FaceNetModel faceNetModel;
     private User user;
     private static final int CAMERA_PERMISSION_CODE = 100;
+    private List<User> userList = new ArrayList<>();
+    private boolean isDataLoaded = false;
+    private final String SERVER_URL = "http://192.168.0.4:3000/api/users"; // IP deploy
     private boolean isValidated = false; // Biến cờ đánh dấu
 
     @Override
@@ -59,6 +71,7 @@ public class ValidationActivity extends AppCompatActivity {
             return insets;
         });
         init();
+        fetchUserFromServer();
         checkCameraPermission();
     }
     private void init(){
@@ -90,6 +103,28 @@ public class ValidationActivity extends AppCompatActivity {
             }
         }
     }
+    public void fetchUserFromServer() {
+        new Thread(() -> {
+           OkHttpClient client = new OkHttpClient();
+           Request request = new Request.Builder()
+                   .url(SERVER_URL)
+                   .build();
+           try (Response response = client.newCall(request).execute()) {
+               if (response.isSuccessful() && response.body() != null) {
+                   String responseBody = response.body().string();
+                   // Parse Json thành List <User>
+                   userList = new Gson().fromJson(responseBody, new TypeToken<List<User>>() {
+                   }.getType());
+                   isDataLoaded = true;
+                   android.util.Log.d("Validation", "Đã tải " + userList.size() + " người dùng từ Server");
+                   runOnUiThread(() -> tvStatus.setText("Sẵn sàng! Hãy đưa mặt vào khung"));
+               }
+           } catch (Exception e){
+               e.printStackTrace();
+               runOnUiThread(() -> tvStatus.setText("Lỗi kết nối đến máy chủ!"));
+           }
+        }).start();
+    }
     private void startCamera(){
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
@@ -101,7 +136,7 @@ public class ValidationActivity extends AppCompatActivity {
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build();
                 imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
-                    if (isValidated) {
+                    if (isValidated || !isDataLoaded) { // Nếu xong hoặc chưa có dữ liệu thì đợi
                         imageProxy.close();
                         return;
                     }
@@ -121,36 +156,34 @@ public class ValidationActivity extends AppCompatActivity {
 
                         // 2. Đưa ảnh đã CROP vào nhận diện
                         float[] currentFaceVector = faceNetModel.recognize(croppedFace);
-                        float[] storedFaceVector = user.getFaceData();
 
-                        double distance = calculateDistance(currentFaceVector, storedFaceVector);
-                        // === Debug ===
-                        android.util.Log.d("FaceDebug", "=============================");
-                        android.util.Log.d("FaceDebug", "Current vector length: " + currentFaceVector.length);
-                        android.util.Log.d("FaceDebug", "Stored vector length: " + storedFaceVector.length);
-                        android.util.Log.d("FaceDebug", "Current[0-5]: " + java.util.Arrays.toString(
-                                java.util.Arrays.copyOfRange(currentFaceVector, 0, Math.min(5, currentFaceVector.length))
-                        ));
-                        android.util.Log.d("FaceDebug", "Stored[0-5]: " + java.util.Arrays.toString(
-                                java.util.Arrays.copyOfRange(storedFaceVector, 0, Math.min(5, storedFaceVector.length))
-                        ));
-                        // === Debug ===
-                        if (distance < 0.85) {
+                        // 3. So sánh với tất cả khuôn mặt trong database
+                        User matchedUser = null;
+                        for (User user : userList) {
+                            double distance = calculateDistance(currentFaceVector, user.getFaceData());
+                            android.util.Log.d("FaceCheck", "Distance với " + user.getName() + " là: " + distance);
+                            if (distance < 0.85) {
+                                matchedUser = user;
+                                break;
+                            }
+                        }
+
+                        if (matchedUser != null) {
                             // Gửi lên Server Qua MQTT
                             isValidated = true;
-                            sendLoginNotification(user, croppedFace);
-
+                            sendLoginNotification(matchedUser, croppedFace);
+                            User finalMatchedUser = matchedUser;
                             runOnUiThread(() -> {
                                 Toast.makeText(this, "Xác thực thành công!", Toast.LENGTH_SHORT).show();
                                 Intent intent = new Intent(ValidationActivity.this, HomeActivity.class);
-                                intent.putExtra("matched_user", (Serializable) user);
+                                intent.putExtra("matched_user", (Serializable) finalMatchedUser);
                                 startActivity(intent);
                                 finish();
                             });
                         } else {
                             // XÁC THỰC THẤT BẠI
                             runOnUiThread(() -> {
-                                tvStatus.setText("Khuôn mặt không khớp! (" + String.format("%.2f", distance) + ")");
+                                tvStatus.setText("Không nhận diện được người dùng");
                             });
                         }
                     }
@@ -218,7 +251,6 @@ public class ValidationActivity extends AppCompatActivity {
                 json.put("email", email);
                 json.put("time", new SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(new Date()));
                 json.put("image", base64Image);
-
                 // 3. Gửi tin nhắn
                 MqttMessage message = new MqttMessage(json.toString().getBytes());
                 client.publish(topic, message);

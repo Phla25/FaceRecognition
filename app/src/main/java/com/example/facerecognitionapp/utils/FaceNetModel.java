@@ -28,7 +28,7 @@ public class FaceNetModel {
         // Kiểm tra interpreter có null không
         if (interpreter == null) {
             Log.e(TAG, "Interpreter is NULL! Model not loaded!");
-            return new float[128]; // Trả về vector rỗng
+            return new float[192]; // Trả về vector rỗng
         }
 
         // 1. Resize ảnh về 112x112
@@ -74,9 +74,9 @@ public class FaceNetModel {
                 int val = intValues[pixel++];
 
                 // Tách RGB và normalize
-                float r = (((val >> 16) & 0xFF) - 127.5f) / 128.0f;
-                float g = (((val >> 8) & 0xFF) - 127.5f) / 128.0f;
-                float b = ((val & 0xFF) - 127.5f) / 128.0f;
+                float r = (((float)((val >> 16) & 0xFF)) - 127.5f) / 128.0f;
+                float g = (((float)((val >> 8) & 0xFF)) - 127.5f) / 128.0f;
+                float b = (((float)(val & 0xFF)) - 127.5f) / 128.0f;
 
                 byteBuffer.putFloat(r);
                 byteBuffer.putFloat(g);

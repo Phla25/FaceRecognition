@@ -62,4 +62,7 @@ dependencies {
     // Cái đặt MQTT
     implementation("org.eclipse.paho:org.eclipse.paho.client.mqttv3:1.2.5")
     implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
+    // Cài đặt thư viện để gọi API
+    implementation("com.squareup.okhttp3:okhttp:4.10.0")
+    implementation("com.google.code.gson:gson:2.10.1") // Parse mảng sang vector
 }
