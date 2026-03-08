@@ -7,11 +7,13 @@ import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.os.Bundle;
 import android.util.Base64;
+import android.util.Log;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
@@ -19,21 +21,15 @@ import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
-import androidx.room.Room;
 
-import com.example.facerecognitionapp.daos.UserDao;
 import com.example.facerecognitionapp.entities.User;
-import com.example.facerecognitionapp.tasks.RegisterTask;
 import com.example.facerecognitionapp.utils.FaceNetModel;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import org.eclipse.paho.client.mqttv3.MqttClient;
 import org.eclipse.paho.client.mqttv3.MqttMessage;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -41,76 +37,57 @@ import java.nio.ByteBuffer;
 
 public class RegisterActivity extends AppCompatActivity {
     private PreviewView previewView;
-    private EditText etName;
-    private EditText etEmail;
-    private Button btnCaptureAndSave;
+    private EditText etName, etEmail;
+    private Button btnCapture;
     private FaceNetModel faceNetModel;
-    private UserDao userDao;
-    private boolean isProcessing = false;
-    private static final int CAMERA_PERMISSION_CODE = 100;
+    private Bitmap latestFaceBitmap;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_register);
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
-            return insets;
-        });
-        init();
-        checkCameraPermission();
-    }
-    private void init(){
+
         previewView = findViewById(R.id.previewViewRegister);
         etName = findViewById(R.id.etName);
         etEmail = findViewById(R.id.etEmail);
-        btnCaptureAndSave = findViewById(R.id.btnCaptureAndSave);
+        btnCapture = findViewById(R.id.btnCaptureAndSave);
+
         faceNetModel = new FaceNetModel(this);
-        AppDatabase appDatabase = Room.databaseBuilder(getApplicationContext(),
-                AppDatabase.class, "face-recognition-db").build();
-        userDao = appDatabase.userDao();
-        btnCaptureAndSave.setOnClickListener(v -> {
-            if (etName.getText().toString().trim().isEmpty() || etEmail.getText().toString().trim().isEmpty()) {
-                Toast.makeText(this, "Vui lòng nhập tên và email!", Toast.LENGTH_SHORT).show();
-            } else if (!isValidEmail(etEmail.getText().toString())) {
-                Toast.makeText(this, "Email không hợp lệ!", Toast.LENGTH_SHORT).show();
-            } else {
-                new Thread(()->{
-                    isProcessing = true;
-                }).start();
+        startCamera();
+
+        btnCapture.setOnClickListener(v -> {
+            String name = etName.getText().toString();
+            String email = etEmail.getText().toString();
+
+            // Khóa ảnh ngay lập tức bằng cách tạo bản sao để tránh bị luồng Analyzer recycle()
+            Bitmap bitmapToSave = null;
+            if (latestFaceBitmap != null && !latestFaceBitmap.isRecycled()) {
+                bitmapToSave = latestFaceBitmap.copy(latestFaceBitmap.getConfig(), false);
             }
+
+            if (name.isEmpty() || email.isEmpty() || bitmapToSave == null) {
+                Toast.makeText(this, "Vui lòng nhập đủ thông tin và soi mặt vào khung", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            // Thực hiện nhận diện trên bản sao an toàn
+            float[] faceVector = faceNetModel.recognize(bitmapToSave);
+            com.example.facerecognitionapp.entities.User user = new com.example.facerecognitionapp.entities.User(name, email, faceVector);
+
+            btnCapture.setEnabled(false);
+            Toast.makeText(this, "Đang gửi dữ liệu...", Toast.LENGTH_SHORT).show();
+
+            // Gửi bản sao an toàn đi
+            sendRegistrationToMQTT(user, bitmapToSave);
         });
     }
-    private void checkCameraPermission() {
-        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
-                == android.content.pm.PackageManager.PERMISSION_DENIED) {
-            // Nếu chưa có quyền, thì hỏi người dùng
-            ActivityCompat.requestPermissions(this,
-                    new String[] {android.Manifest.permission.CAMERA}, CAMERA_PERMISSION_CODE);
-        } else {
-            // Nếu đã có quyền rồi thì mở Camera
-            startCamera();
-        }
-    }
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == CAMERA_PERMISSION_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Đã cấp quyền Camera", Toast.LENGTH_SHORT).show();
-                startCamera();
-            } else {
-                Toast.makeText(this, "Bạn cần cấp quyền Camera để sử dụng tính năng này", Toast.LENGTH_LONG).show();
-            }
-        }
-    }
+
     private void startCamera() {
-        ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
-        cameraProviderFuture.addListener(() -> {
+        ListenableFuture<ProcessCameraProvider> providerFuture = ProcessCameraProvider.getInstance(this);
+        providerFuture.addListener(() -> {
             try {
-                ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
+                ProcessCameraProvider cameraProvider = providerFuture.get();
                 Preview preview = new Preview.Builder().build();
                 preview.setSurfaceProvider(previewView.getSurfaceProvider());
 
@@ -119,134 +96,108 @@ public class RegisterActivity extends AppCompatActivity {
                         .build();
 
                 imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
-                    if (isProcessing) {
-                        Bitmap fullBitmap = imageProxyToBitmap(imageProxy);
-                        if (fullBitmap != null) {
-                            // --- BẮT ĐẦU LOGIC CROP ĐỒNG BỘ ---
-                            int width = fullBitmap.getWidth();
-                            int height = fullBitmap.getHeight();
-
-                            // Cắt một vùng hình chữ nhật đứng ở giữa ảnh (Tỉ lệ 0.7x0.6 giống Validation)
-                            int cropW = (int) (width * 0.7);
-                            int cropH = (int) (height * 0.6);
-                            int left = (width - cropW) / 2;
-                            int top = (height - cropH) / 2;
-
-                            // Tạo ảnh Bitmap mới chỉ chứa phần khuôn mặt trong khung
-                            Bitmap croppedFace = Bitmap.createBitmap(fullBitmap, left, top, cropW, cropH);
-                            // --- KẾT THÚC LOGIC CROP ---
-
-                            // Trích xuất vector từ ảnh đã CROP
-                            float[] faceVector = faceNetModel.recognize(croppedFace);
-
-                            // Tạo Đối tượng User mới với vector chất lượng cao
-                            User user = new User(
-                                    etName.getText().toString(),
-                                    etEmail.getText().toString(),
-                                    faceVector
-                            );
-                            // Gửi thông tin đăng ký
-                            sendRegisterInformation(user, croppedFace);
-                            // Thực hiện lưu vào Database
-                            runOnUiThread(() -> {
-                                Toast.makeText(RegisterActivity.this, "Đăng ký thành công", Toast.LENGTH_SHORT).show();
-                                cameraProvider.unbindAll();
-                                finish(); // Quay lại Login
-                            });
-                        }
-                        isProcessing = false;
+                    Bitmap bmp = imageProxyToBitmap(imageProxy);
+                    if (bmp != null) {
+                        if (latestFaceBitmap != null) latestFaceBitmap.recycle();
+                        latestFaceBitmap = bmp;
                     }
                     imageProxy.close();
                 });
 
-                cameraProvider.unbindAll();
                 cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageAnalysis);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
+            } catch (Exception e) { e.printStackTrace(); }
         }, ContextCompat.getMainExecutor(this));
     }
+
     private Bitmap imageProxyToBitmap(ImageProxy image) {
-        // 1. Chuyển đổi ImageProxy sang Bitmap (giữ nguyên gốc)
-        ByteBuffer yBuffer = image.getPlanes()[0].getBuffer();
-        ByteBuffer uBuffer = image.getPlanes()[1].getBuffer();
-        ByteBuffer vBuffer = image.getPlanes()[2].getBuffer();
+        ImageProxy.PlaneProxy[] planes = image.getPlanes();
+        ByteBuffer yBuffer = planes[0].getBuffer();
+        ByteBuffer uBuffer = planes[1].getBuffer();
+        ByteBuffer vBuffer = planes[2].getBuffer();
 
         int ySize = yBuffer.remaining();
         int uSize = uBuffer.remaining();
         int vSize = vBuffer.remaining();
 
         byte[] nv21 = new byte[ySize + uSize + vSize];
+
+        // U và V trong ImageProxy thường có stride khác nhau, cách lấy trực tiếp của bạn dễ gây lỗi màu
         yBuffer.get(nv21, 0, ySize);
         vBuffer.get(nv21, ySize, vSize);
         uBuffer.get(nv21, ySize + vSize, uSize);
 
         YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, image.getWidth(), image.getHeight(), null);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        yuvImage.compressToJpeg(new Rect(0, 0, yuvImage.getWidth(), yuvImage.getHeight()), 100, out);
+        yuvImage.compressToJpeg(new Rect(0, 0, image.getWidth(), image.getHeight()), 100, out);
         byte[] imageBytes = out.toByteArray();
         Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
 
-        // 2. Xoay và Lật gương chuẩn
+        // Xoay và Lật gương (Camera trước luôn cần lật gương để không bị ngược mặt)
         android.graphics.Matrix matrix = new android.graphics.Matrix();
         matrix.postRotate(image.getImageInfo().getRotationDegrees());
         matrix.postScale(-1, 1, bitmap.getWidth() / 2f, bitmap.getHeight() / 2f);
 
-        Bitmap fullBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+        Bitmap rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
 
-        // 3. LOGIC CROP: Cắt đúng vùng ở giữa (khớp với khung trên Layout)
-        int width = fullBitmap.getWidth();
-        int height = fullBitmap.getHeight();
-
-        // Tỉ lệ này phải khớp với khung faceGuideFrame trong XML
+        // CROP: Cắt đúng vùng khuôn mặt theo khung 0.7x0.6
+        int width = rotatedBitmap.getWidth();
+        int height = rotatedBitmap.getHeight();
         int cropW = (int) (width * 0.7);
         int cropH = (int) (height * 0.6);
         int left = (width - cropW) / 2;
         int top = (height - cropH) / 2;
 
-        Bitmap croppedBitmap = Bitmap.createBitmap(fullBitmap, left, top, cropW, cropH);
+        Bitmap croppedFace = Bitmap.createBitmap(rotatedBitmap, left, top, cropW, cropH);
 
-        // 4. Giải phóng bộ nhớ
+        // Giải phóng bộ nhớ ngay lập tức
         bitmap.recycle();
-        fullBitmap.recycle();
+        rotatedBitmap.recycle();
 
-        return croppedBitmap; // Trả về ảnh đã được CROP
+        return croppedFace;
     }
-    private boolean isValidEmail(String email) {
-        String emailPattern = "[a-zA-Z0-9._-]+@[a-z]+\\.+[a-z]+";
-        return email.matches(emailPattern);
-    }
-    public void sendRegisterInformation(User user, Bitmap bitmap){
-        String brokerUrl = "tcp://broker.emqx.io:1883"; // Broker miễn phí để test
-        String clientId = "AndroidFaceApp_" + System.currentTimeMillis();
-        String topic = "face_app/register_logs";
-        new Thread(()->{
+
+    private void sendRegistrationToMQTT(com.example.facerecognitionapp.entities.User user, Bitmap bitmap) {
+        new Thread(() -> {
             try {
-                MqttClient client = new MqttClient(brokerUrl, clientId, null);
+                org.eclipse.paho.client.mqttv3.MqttClient client = new org.eclipse.paho.client.mqttv3.MqttClient("tcp://broker.emqx.io:1883", org.eclipse.paho.client.mqttv3.MqttClient.generateClientId(), new org.eclipse.paho.client.mqttv3.persist.MemoryPersistence());
                 client.connect();
-                String name = user.getName();
-                String email = user.getEmail();
-                // Parse Base64
-                Bitmap smallBitmap = Bitmap.createScaledBitmap(bitmap, 160, 160, false);
+
                 ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                smallBitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos);
-                String base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT);
-                // Tạo JSON payload
+                // Nén ảnh từ bản sao an toàn
+                Bitmap small = Bitmap.createScaledBitmap(bitmap, 120, 120, false);
+                small.compress(Bitmap.CompressFormat.JPEG, 60, baos);
+                String base64Image = android.util.Base64.encodeToString(baos.toByteArray(), android.util.Base64.NO_WRAP);
+
                 JSONObject json = new JSONObject();
-                json.put("name", name);
-                json.put("email", email);
+                json.put("name", user.getName());
+                json.put("email", user.getEmail());
                 json.put("image", base64Image);
-                // Chuyển mảng float[] thành JSONArray để Server dễ Parse
+
                 org.json.JSONArray vectorJson = new org.json.JSONArray();
-                for (float v : user.getFaceData()) {
-                    vectorJson.put((double) v);
-                }
-                json.put("face_vector", vectorJson); // QUAN TRỌNG: Để server lưu vào DB
-                // Gửi tin
-                MqttMessage message = new MqttMessage(json.toString().getBytes());
-                client.publish(topic, message);
-            } catch (Exception e){
-                e.printStackTrace();
+                for (float v : user.getFaceData()) vectorJson.put((double) v);
+                json.put("face_vector", vectorJson);
+
+                org.eclipse.paho.client.mqttv3.MqttMessage msg = new org.eclipse.paho.client.mqttv3.MqttMessage(json.toString().getBytes());
+                msg.setQos(1);
+                client.publish("face_app/register_logs", msg);
+                client.disconnect();
+
+                // Giải phóng bản sao sau khi gửi xong
+                bitmap.recycle();
+                small.recycle();
+
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Đăng ký thành công!", Toast.LENGTH_SHORT).show();
+                    finish();
+                });
+            } catch (Exception e) {
+                Log.e("MQTT", "Lỗi: " + e.getMessage());
+                // Giải phóng ảnh nếu lỗi
+                if (bitmap != null) bitmap.recycle();
+                runOnUiThread(() -> {
+                    btnCapture.setEnabled(true);
+                    Toast.makeText(this, "Lỗi gửi MQTT!", Toast.LENGTH_SHORT).show();
+                });
             }
         }).start();
     }

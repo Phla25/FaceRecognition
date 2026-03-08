@@ -8,10 +8,12 @@ import android.graphics.Rect;
 import android.graphics.YuvImage;
 import android.os.Bundle;
 import android.util.Base64;
+import android.util.Log;
 import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.activity.EdgeToEdge;
+import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.camera.core.CameraSelector;
 import androidx.camera.core.ImageAnalysis;
@@ -19,11 +21,7 @@ import androidx.camera.core.ImageProxy;
 import androidx.camera.core.Preview;
 import androidx.camera.lifecycle.ProcessCameraProvider;
 import androidx.camera.view.PreviewView;
-import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-import androidx.core.graphics.Insets;
-import androidx.core.view.ViewCompat;
-import androidx.core.view.WindowInsetsCompat;
 
 import com.example.facerecognitionapp.entities.User;
 import com.example.facerecognitionapp.utils.FaceNetModel;
@@ -36,227 +34,206 @@ import org.eclipse.paho.client.mqttv3.MqttMessage;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
-import java.io.Serializable;
+import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
 
+import okhttp3.Call;
+import okhttp3.Callback;
 import okhttp3.OkHttpClient;
 import okhttp3.Request;
 import okhttp3.Response;
 
-
 public class ValidationActivity extends AppCompatActivity {
-    private PreviewView previewViewValidation;
+    private PreviewView previewView;
     private TextView tvStatus;
     private FaceNetModel faceNetModel;
-    private User user;
-    private static final int CAMERA_PERMISSION_CODE = 100;
-    private List<User> userList = new ArrayList<>();
+    private List<User> userList;
     private boolean isDataLoaded = false;
-    private final String SERVER_URL = "http://192.168.0.4:3000/api/users"; // IP deploy
-    private boolean isValidated = false; // Biến cờ đánh dấu
+    private boolean isValidated = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         EdgeToEdge.enable(this);
         setContentView(R.layout.activity_validation);
-        ViewCompat.setOnApplyWindowInsetsListener(findViewById(R.id.main), (v, insets) -> {
-            Insets systemBars = insets.getInsets(WindowInsetsCompat.Type.systemBars());
-            v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom);
-            return insets;
-        });
-        init();
-        fetchUserFromServer();
-        checkCameraPermission();
-    }
-    private void init(){
-        previewViewValidation = findViewById(R.id.previewViewValidation);
+
+        previewView = findViewById(R.id.previewViewValidation);
         tvStatus = findViewById(R.id.tvStatus);
         faceNetModel = new FaceNetModel(this);
-        user = (User)getIntent().getSerializableExtra("user");
+
+        fetchUserFromServer();
+        startCamera();
     }
-    private void checkCameraPermission() {
-        if (ContextCompat.checkSelfPermission(this, android.Manifest.permission.CAMERA)
-                == android.content.pm.PackageManager.PERMISSION_DENIED) {
-            // Nếu chưa có quyền, thì hỏi người dùng
-            ActivityCompat.requestPermissions(this,
-                    new String[] {android.Manifest.permission.CAMERA}, CAMERA_PERMISSION_CODE);
-        } else {
-            // Nếu đã có quyền rồi thì mở Camera
-            startCamera();
-        }
-    }
-    @Override
-    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (requestCode == CAMERA_PERMISSION_CODE) {
-            if (grantResults.length > 0 && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                Toast.makeText(this, "Đã cấp quyền Camera", Toast.LENGTH_SHORT).show();
-                startCamera();
-            } else {
-                Toast.makeText(this, "Bạn cần cấp quyền Camera để sử dụng tính năng này", Toast.LENGTH_LONG).show();
+
+    private void fetchUserFromServer() {
+        OkHttpClient client = new OkHttpClient();
+        Request request = new Request.Builder().url("http://192.168.0.4:3000/api/users").build();
+        client.newCall(request).enqueue(new Callback() {
+            @Override
+            public void onFailure(@NonNull Call call, @NonNull IOException e) {
+                runOnUiThread(() -> tvStatus.setText("Lỗi kết nối server!"));
             }
-        }
+
+            @Override
+            public void onResponse(@NonNull Call call, @NonNull Response response) throws IOException {
+                if (response.isSuccessful() && response.body() != null) {
+                    userList = new Gson().fromJson(response.body().string(), new TypeToken<List<User>>(){}.getType());
+                    isDataLoaded = true;
+                    Log.d("Validation", "Đã tải " + userList.size() + " users");
+                }
+            }
+        });
     }
-    public void fetchUserFromServer() {
-        new Thread(() -> {
-           OkHttpClient client = new OkHttpClient();
-           Request request = new Request.Builder()
-                   .url(SERVER_URL)
-                   .build();
-           try (Response response = client.newCall(request).execute()) {
-               if (response.isSuccessful() && response.body() != null) {
-                   String responseBody = response.body().string();
-                   // Parse Json thành List <User>
-                   userList = new Gson().fromJson(responseBody, new TypeToken<List<User>>() {
-                   }.getType());
-                   isDataLoaded = true;
-                   android.util.Log.d("Validation", "Đã tải " + userList.size() + " người dùng từ Server");
-                   runOnUiThread(() -> tvStatus.setText("Sẵn sàng! Hãy đưa mặt vào khung"));
-               }
-           } catch (Exception e){
-               e.printStackTrace();
-               runOnUiThread(() -> tvStatus.setText("Lỗi kết nối đến máy chủ!"));
-           }
-        }).start();
-    }
-    private void startCamera(){
+
+    private void startCamera() {
         ListenableFuture<ProcessCameraProvider> cameraProviderFuture = ProcessCameraProvider.getInstance(this);
         cameraProviderFuture.addListener(() -> {
-            try{
+            try {
                 ProcessCameraProvider cameraProvider = cameraProviderFuture.get();
                 Preview preview = new Preview.Builder().build();
-                preview.setSurfaceProvider(previewViewValidation.getSurfaceProvider());
+                preview.setSurfaceProvider(previewView.getSurfaceProvider());
+
                 ImageAnalysis imageAnalysis = new ImageAnalysis.Builder()
                         .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                         .build();
+
                 imageAnalysis.setAnalyzer(ContextCompat.getMainExecutor(this), imageProxy -> {
-                    if (isValidated || !isDataLoaded) { // Nếu xong hoặc chưa có dữ liệu thì đợi
+                    if (isValidated || !isDataLoaded || userList == null) {
                         imageProxy.close();
                         return;
                     }
-                    Bitmap fullBitmap = imageProxyToBitmap(imageProxy);
-                    if (fullBitmap != null) {
-                        // 1. Tính toán vùng Crop (Lấy vùng giữa ảnh tương ứng với khung trên màn hình)
-                        int width = fullBitmap.getWidth();
-                        int height = fullBitmap.getHeight();
 
-                        // Cắt một vùng hình chữ nhật đứng ở giữa ảnh
-                        int cropW = (int) (width * 0.7); // Lấy 70% chiều rộng
-                        int cropH = (int) (height * 0.6); // Lấy 60% chiều cao
-                        int left = (width - cropW) / 2;
-                        int top = (height - cropH) / 2;
-
-                        Bitmap croppedFace = Bitmap.createBitmap(fullBitmap, left, top, cropW, cropH);
-
-                        // 2. Đưa ảnh đã CROP vào nhận diện
-                        float[] currentFaceVector = faceNetModel.recognize(croppedFace);
-
-                        // 3. So sánh với tất cả khuôn mặt trong database
-                        User matchedUser = null;
+                    Bitmap faceBitmap = imageProxyToBitmap(imageProxy);
+                    if (faceBitmap != null) {
+                        float[] currentVector = faceNetModel.recognize(faceBitmap);
                         for (User user : userList) {
-                            double distance = calculateDistance(currentFaceVector, user.getFaceData());
-                            android.util.Log.d("FaceCheck", "Distance với " + user.getName() + " là: " + distance);
-                            if (distance < 0.85) {
-                                matchedUser = user;
+                            double dist = calculateDistance(currentVector, user.getFaceData());
+                            Log.d("FaceCheck", "Distance với " + user.getName() + ": " + dist);
+
+                            if (dist < 1.0) {
+                                isValidated = true;
+
+                                // TẠO BẢN SAO ĐỂ GỬI LOG (QUAN TRỌNG)
+                                // Việc copy này giúp luồng MQTT có ảnh riêng, không bị ảnh hưởng khi faceBitmap.recycle()
+                                Bitmap bitmapForLog = faceBitmap.copy(faceBitmap.getConfig(), false);
+
+                                handleSuccess(user, bitmapForLog);
                                 break;
                             }
                         }
-
-                        if (matchedUser != null) {
-                            // Gửi lên Server Qua MQTT
-                            isValidated = true;
-                            sendLoginNotification(matchedUser, croppedFace);
-                            User finalMatchedUser = matchedUser;
-                            runOnUiThread(() -> {
-                                Toast.makeText(this, "Xác thực thành công!", Toast.LENGTH_SHORT).show();
-                                Intent intent = new Intent(ValidationActivity.this, HomeActivity.class);
-                                intent.putExtra("matched_user", (Serializable) finalMatchedUser);
-                                startActivity(intent);
-                                finish();
-                            });
-                        } else {
-                            // XÁC THỰC THẤT BẠI
-                            runOnUiThread(() -> {
-                                tvStatus.setText("Không nhận diện được người dùng");
-                            });
-                        }
+                        faceBitmap.recycle(); // Giải phóng ảnh gốc
                     }
                     imageProxy.close();
                 });
-                cameraProvider.unbindAll();
+
                 cameraProvider.bindToLifecycle(this, CameraSelector.DEFAULT_FRONT_CAMERA, preview, imageAnalysis);
-            } catch (Exception e) {
-                throw new RuntimeException(e);
-            }
+            } catch (Exception e) { e.printStackTrace(); }
         }, ContextCompat.getMainExecutor(this));
     }
+
     private Bitmap imageProxyToBitmap(ImageProxy image) {
-        // 1. Chuyển đổi cơ bản sang Bitmap
         ImageProxy.PlaneProxy[] planes = image.getPlanes();
         ByteBuffer yBuffer = planes[0].getBuffer();
         ByteBuffer uBuffer = planes[1].getBuffer();
         ByteBuffer vBuffer = planes[2].getBuffer();
+
         int ySize = yBuffer.remaining();
         int uSize = uBuffer.remaining();
         int vSize = vBuffer.remaining();
+
         byte[] nv21 = new byte[ySize + uSize + vSize];
+
+        // U và V trong ImageProxy thường có stride khác nhau, cách lấy trực tiếp của bạn dễ gây lỗi màu
         yBuffer.get(nv21, 0, ySize);
         vBuffer.get(nv21, ySize, vSize);
         uBuffer.get(nv21, ySize + vSize, uSize);
+
         YuvImage yuvImage = new YuvImage(nv21, ImageFormat.NV21, image.getWidth(), image.getHeight(), null);
         ByteArrayOutputStream out = new ByteArrayOutputStream();
-        yuvImage.compressToJpeg(new Rect(0, 0, yuvImage.getWidth(), yuvImage.getHeight()), 100, out);
+        yuvImage.compressToJpeg(new Rect(0, 0, image.getWidth(), image.getHeight()), 100, out);
         byte[] imageBytes = out.toByteArray();
         Bitmap bitmap = BitmapFactory.decodeByteArray(imageBytes, 0, imageBytes.length);
+
+        // Xoay và Lật gương (Camera trước luôn cần lật gương để không bị ngược mặt)
         android.graphics.Matrix matrix = new android.graphics.Matrix();
-        matrix.postRotate(image.getImageInfo().getRotationDegrees()); // Xoay 270 độ theo máy
-        //Lật gương cho camera trước
+        matrix.postRotate(image.getImageInfo().getRotationDegrees());
         matrix.postScale(-1, 1, bitmap.getWidth() / 2f, bitmap.getHeight() / 2f);
-        return Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+
+        Bitmap rotatedBitmap = Bitmap.createBitmap(bitmap, 0, 0, bitmap.getWidth(), bitmap.getHeight(), matrix, true);
+
+        // CROP: Cắt đúng vùng khuôn mặt theo khung 0.7x0.6
+        int width = rotatedBitmap.getWidth();
+        int height = rotatedBitmap.getHeight();
+        int cropW = (int) (width * 0.7);
+        int cropH = (int) (height * 0.6);
+        int left = (width - cropW) / 2;
+        int top = (height - cropH) / 2;
+
+        Bitmap croppedFace = Bitmap.createBitmap(rotatedBitmap, left, top, cropW, cropH);
+
+        // Giải phóng bộ nhớ ngay lập tức
+        bitmap.recycle();
+        rotatedBitmap.recycle();
+
+        return croppedFace;
     }
+
     private double calculateDistance(float[] v1, float[] v2) {
-        double sum = 0;
-        for (int i = 0; i < v1.length; i++) {
-            float diff = v1[i] - v2[i];
-            sum += diff * diff;
-        }
+        float sum = 0;
+        for (int i = 0; i < v1.length; i++) sum += Math.pow(v1[i] - v2[i], 2);
         return Math.sqrt(sum);
     }
-    private void sendLoginNotification(User user, Bitmap faceBitmap) {
-        String brokerUrl = "tcp://broker.emqx.io:1883"; // Broker miễn phí để test
-        String clientId = "AndroidFaceApp_" + System.currentTimeMillis();
-        String topic = "face_app/login_logs";
+
+    private void handleSuccess(User user, Bitmap bitmap) {
+        runOnUiThread(() -> {
+            tvStatus.setText("Xin chào " + user.getName());
+            Toast.makeText(this, "Xác thực thành công!", Toast.LENGTH_SHORT).show();
+            sendLoginLogToMQTT(user, bitmap);
+            Intent intent = new Intent(this, HomeActivity.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TASK);
+            intent.putExtra("matched_user", user);
+            startActivity(intent);
+            finish();
+        });
+    }
+
+    private void sendLoginLogToMQTT(User user, Bitmap bitmap) {
         new Thread(() -> {
+            MqttClient client = null;
             try {
-                MqttClient client = new MqttClient(brokerUrl, clientId, null);
+                // Sử dụng MemoryPersistence để tránh lỗi ghi file khi activity đã đóng
+                client = new MqttClient("tcp://broker.emqx.io:1883", MqttClient.generateClientId(), new org.eclipse.paho.client.mqttv3.persist.MemoryPersistence());
                 client.connect();
-                String name = user.getName();
-                String email = user.getEmail();
 
-                // 1. Chuyển Bitmap thành Base64 (Resize nhỏ để gửi nhanh)
-                Bitmap smallBitmap = Bitmap.createScaledBitmap(faceBitmap, 160, 160, false);
-                ByteArrayOutputStream baos = new ByteArrayOutputStream();
-                smallBitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos);
-                String base64Image = Base64.encodeToString(baos.toByteArray(), Base64.DEFAULT);
+                ByteArrayOutputStream out = new ByteArrayOutputStream();
+                // Nén ảnh từ bản sao
+                Bitmap small = Bitmap.createScaledBitmap(bitmap, 120, 120, false);
+                small.compress(Bitmap.CompressFormat.JPEG, 60, out);
 
-                // 2. Tạo JSON payload
                 JSONObject json = new JSONObject();
-                json.put("name", name);
-                json.put("email", email);
+                json.put("name", user.getName());
+                json.put("email", user.getEmail());
+                // Sử dụng NO_WRAP để chuỗi Base64 không bị ngắt dòng, giúp Server nhận JSON chuẩn
+                json.put("image", Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP));
                 json.put("time", new SimpleDateFormat("HH:mm:ss dd/MM/yyyy", Locale.getDefault()).format(new Date()));
-                json.put("image", base64Image);
-                // 3. Gửi tin nhắn
+
                 MqttMessage message = new MqttMessage(json.toString().getBytes());
-                client.publish(topic, message);
+                message.setQos(1); // Đảm bảo gửi ít nhất 1 lần
+                client.publish("face_app/login_logs", message);
                 client.disconnect();
+
+                Log.d("MQTT_LOG", "Gửi log thành công cho user: " + user.getName());
+
             } catch (Exception e) {
+                Log.e("MQTT_LOG", "Lỗi gửi log: " + e.getMessage());
                 e.printStackTrace();
+            } finally {
+                // Luôn giải phóng bitmap để tránh tràn bộ nhớ
+                if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
             }
         }).start();
     }
