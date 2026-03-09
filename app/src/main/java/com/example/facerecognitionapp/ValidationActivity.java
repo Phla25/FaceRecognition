@@ -71,7 +71,7 @@ public class ValidationActivity extends AppCompatActivity {
 
     private void fetchUserFromServer() {
         OkHttpClient client = new OkHttpClient();
-        Request request = new Request.Builder().url("http://192.168.0.4:3000/api/users").build();
+        Request request = new Request.Builder().url("https://nc72z4cv-3000.asse.devtunnels.ms/api/users").build();
         client.newCall(request).enqueue(new Callback() {
             @Override
             public void onFailure(@NonNull Call call, @NonNull IOException e) {
